@@ -25,7 +25,7 @@ namespace RoslynToTypescript.Tests
         [Fact]
         public void BuildInterfaces()
         {
-            var harness = new TestHarness("Files\\BuildInterfaces.cs".TextFromFile());
+            var harness = new TestHarness(FileUtil.LoadEmbeddedFile("Files","BuildInterfaces.cs"));
             var first = harness.Compilation.GlobalNamespace.GetTypeMembers().Where(x => x.DeclaringSyntaxReferences.Length > 0);
 
             int i = 0;

@@ -33,19 +33,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="Files\SimpleSource.ts">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
-
-  <ItemGroup>
     <Folder Include="Extensions\" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="Files\BuildInterfaces.cs">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    <EmbeddedResource Include="Files\BuildInterfaces.cs" />
+    <None Remove="Files\SimpleSource.ts" />
+    <EmbeddedResource Include="Files\SimpleSource.ts" />
   </ItemGroup>
 
 </Project>
