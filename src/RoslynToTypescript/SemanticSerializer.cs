@@ -2,20 +2,126 @@
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Roslynator.CSharp;
 using RoslynToTypescript;
-
+[assembly:InternalsVisibleTo("RoslynToTypescript.Tests")]
 namespace RoslynToTypescript
 {
-    public class SemanticSerializer
+    internal class ToTypescriptHelper
     {
         private static readonly HashSet<string> KnownGenericCollectionNames = new HashSet<string>()
         {
             "List", "IList", "ICollection", "IEnumerable", "HashSet", "ImmutableArray", "ImmutableList",
             "ReadOnlyCollection", "ObservableCollection", "ReadOnlyObservableCollection", "ISet"
         };
+        
+      
+        
+        /// <summary>
+        /// Return the underlying type if it is a collection. Otherwise returns null
+        /// </summary>
+        /// <param name="namedTypeSymbol"></param>
+        /// <returns></returns>
+        internal static ITypeSymbol? IsSomeKindOfCollection(INamedTypeSymbol namedTypeSymbol)
+        {
+            if (!namedTypeSymbol.IsGenericType)
+                return null;
+
+            var match = namedTypeSymbol.AllInterfaces.FirstOrDefault(x => x.ConstructedFrom.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T);
+            if (match != null)
+            {
+                return match.TypeArguments.Single();
+            }
+
+            if (namedTypeSymbol.TypeKind == TypeKind.Error)
+            {
+                if (KnownGenericCollectionNames.Contains(namedTypeSymbol.Name))
+                {
+                    return namedTypeSymbol.TypeArguments.Single();
+                }
+            }
+
+            return null;
+        }
+        
+
+        internal static (ITypeSymbol? symbol, bool nullable) IsNullable(ITypeSymbol symbol)
+        {
+            return symbol switch
+            {
+                {NullableAnnotation: not NullableAnnotation.Annotated} => (null, false),
+                {Name: not "Nullable"} => (symbol, true),
+                INamedTypeSymbol named => (named.TypeArguments.Single(), true),
+                _ => throw new InvalidOperationException("Is nullable but not named type")
+            };
+        }
+    }
+
+    internal class InterfaceBuildVisitor 
+    {
+        public Compilation Compilation { get; }
+        
+       private ImmutableArray<IMemberDeclaration> _members = ImmutableArray<IMemberDeclaration>.Empty;
+
+       public HashSet<INamedTypeSymbol> OtherClasses { get; } = new HashSet<INamedTypeSymbol>();
+
+        public InterfaceBuildVisitor(Compilation compilation, bool fetchOtherClasses)
+        {
+            Compilation = compilation;
+        }
+
+        public InterfaceDeclaration Visit(INamedTypeSymbol symbol)
+        {
+            return new InterfaceDeclaration(new ExportKeyword(), new Identifier(symbol.Name), null,
+                VisitMembers(symbol.GetMembers()));
+        }
+
+
+        private ImmutableArray<IMemberDeclaration> VisitMembers(ImmutableArray<ISymbol> members)
+        {
+            var result = ImmutableArray<IMemberDeclaration>.Empty;
+            
+            foreach (var member in members)
+            {
+                switch (member)
+                {
+                    case IPropertySymbol propertySymbol:
+                        result = result.Add(VisitProperty(propertySymbol));
+                        break;
+                }
+            }
+
+            return result;
+        }
+    
+
+        public PropertyDeclaration VisitProperty(IPropertySymbol symbol)
+        {
+            var typeVisitor = new TypeVisitor();
+            var result = typeVisitor.Visit(symbol.Type);
+            
+            foreach (var other in typeVisitor._others)
+            {
+                this.OtherClasses.Add(other);
+            }
+
+            QuestionToken? token = result switch
+            {
+                NullableType => new QuestionToken(),
+                _ => null
+            };
+
+            return new PropertyDeclaration(symbol.Name.FirstToLower(), result, token);
+        }
+
+    }
+    
+    
+    public class SemanticSerializer
+    {
+       
 
         public Compilation Compilation { get; }
 
@@ -57,115 +163,32 @@ namespace RoslynToTypescript
 
         public ITypeSyntax GetType(ITypeSymbol symbol, bool skipNullCheck = false)
         {
-            if (!skipNullCheck)
-            {
-                var (typeSymbol, nullable) = IsNullable(symbol);
-                if (nullable)
-                {
-                    return new NullableType(GetType(typeSymbol!, true));
-                }
-            }
+            var typeVisitor = new TypeVisitor();
+            return typeVisitor.Visit(symbol);
+        }
 
-            if (symbol is IArrayTypeSymbol arrayTypeSymbol)
+        public string BuildInterface(INamedTypeSymbol namedTypeSymbol)
+        {
+           
+
+            var statements = ImmutableArray<IStatement>.Empty;
+            
+            var interfaceVisitor = new InterfaceBuildVisitor(this.Compilation, true);
+            statements = statements.Add(interfaceVisitor.Visit(namedTypeSymbol));
+            if (interfaceVisitor.OtherClasses.Count > 0)
             {
-                return new ArrayType(GetType(arrayTypeSymbol.ElementType));
+                var otherSymbols = interfaceVisitor.OtherClasses.ToList();
+                foreach (var otherSymbol in otherSymbols)
+                {
+                    statements = statements.Add(interfaceVisitor.Visit(otherSymbol));
+                }
             }
             
-            if (symbol is INamedTypeSymbol namedTypeSymbol)
-            {
-                if (CSharpFacts.IsNumericType(namedTypeSymbol.SpecialType))
-                    return new PredefinedType(TypescriptBuiltInTypes.Number);
-
-                // Håndter andre kendte type
-                var result = namedTypeSymbol.SpecialType switch 
-                {
-                    SpecialType.System_String => new PredefinedType(TypescriptBuiltInTypes.String),
-                    SpecialType.System_Char => new PredefinedType(TypescriptBuiltInTypes.String),
-                    SpecialType.System_DateTime => new PredefinedType(TypescriptBuiltInTypes.String),
-                    SpecialType.System_Boolean => new PredefinedType(TypescriptBuiltInTypes.Boolean),
-                    _  => null
-                };
-
-                if (result is not null) return result;
-
-                if (symbol.SpecialType.Is(SpecialType.System_Object, SpecialType.System_Enum, SpecialType.None))
-                {
-                    var typeReference = new TypeReference(namedTypeSymbol.Name, null);
-                    
-                    if (namedTypeSymbol.IsGenericType)
-                    {
-                        var match = IsSomeKindOfCollection(namedTypeSymbol);
-                        if (match is not null)
-                        {
-                            return new ArrayType(GetType(match));
-                        }
-
-                        typeReference = typeReference with
-                        {
-                            Parameters = ImmutableArray<TypeParameter>.Empty.AddRange(
-                                namedTypeSymbol.TypeArguments.Select(x =>
-                                    new TypeParameter(new IdentifierType(x.Name))))
-                        };
-                    }
-
-                    return typeReference;
-                }
-            }
-
-            return new PredefinedType(TypescriptBuiltInTypes.Any);
+            var sourceFile = new SourceFile(statements);
+            return sourceFile.Display();
         }
 
-        /// <summary>
-        /// Return the underlying type if it is a collection. Otherwise returns null
-        /// </summary>
-        /// <param name="namedTypeSymbol"></param>
-        /// <returns></returns>
-        private ITypeSymbol? IsSomeKindOfCollection(INamedTypeSymbol namedTypeSymbol)
-        {
-            if (!namedTypeSymbol.IsGenericType)
-                return null;
-
-            var match = namedTypeSymbol.AllInterfaces.FirstOrDefault(x => x.ConstructedFrom.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T);
-            if (match != null)
-            {
-                return match.TypeArguments.Single();
-            }
-
-            if (namedTypeSymbol.TypeKind == TypeKind.Error)
-            {
-                if (KnownGenericCollectionNames.Contains(namedTypeSymbol.Name))
-                {
-                    return namedTypeSymbol.TypeArguments.Single();
-                }
-            }
-
-            return null;
-        }
-        
-
-        public (ITypeSymbol? symbol, bool nullable) IsNullable(ITypeSymbol symbol)
-        {
-            return symbol switch
-            {
-                {NullableAnnotation: not NullableAnnotation.Annotated} => (null, false),
-                {Name: not "Nullable"} => (symbol, true),
-                INamedTypeSymbol named => (named.TypeArguments.Single(), true),
-                _ => throw new InvalidOperationException("Is nullable but not named type")
-            };
-        }
-
-        public string BuildInterfaces(INamedTypeSymbol namedTypeSymbol)
-        {
-            var sourceFile = new SourceFile(ImmutableArray<IStatement>.Empty);
-
-            var namedTypeSymbols = Compilation.GlobalNamespace.GetTypeMembers().Where(x => x.DeclaringSyntaxReferences.Length > 0);
-
-            var interf = BuildInterface(namedTypeSymbol);
-            var sourcefile = new SourceFile(ImmutableArray.Create<IStatement>().Add(interf));
-            return sourcefile.Display();
-        }
-
-        public InterfaceDeclaration BuildInterface(INamedTypeSymbol namedTypeSymbol)
+        private InterfaceDeclaration BuildSingleInterface(INamedTypeSymbol namedTypeSymbol)
         {
             var members = new List<IMemberDeclaration>();
             foreach (var propertySymbol in namedTypeSymbol.GetMembers().OfType<IPropertySymbol>())

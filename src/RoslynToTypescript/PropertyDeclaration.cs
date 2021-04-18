@@ -37,6 +37,8 @@ namespace RoslynToTypescript
                 builder.Append($" : {Type.Display()}");
             }
 
+            builder.Append(";");
+
             return builder.ToString();
         }
     }

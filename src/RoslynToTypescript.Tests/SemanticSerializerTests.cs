@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using FluentAssertions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -23,15 +24,16 @@ namespace RoslynToTypescript.Tests
         }
 
         [Fact]
-        public void BuildInterfaces()
+        public void BuildInterfaces_OtherClassMatchedAndMapped()
         {
             var harness = new TestHarness(FileUtil.LoadEmbeddedFile("Files","BuildInterfaces.cs"));
-            var first = harness.Compilation.GlobalNamespace.GetTypeMembers().Where(x => x.DeclaringSyntaxReferences.Length > 0);
+            var expected = FileUtil.LoadEmbeddedFile("Files", "BuildInterfaces.ts");
+            var first = harness.Compilation.GlobalNamespace.GetTypeMembers().First();
 
-            int i = 0;
-
-            //var result = harness.Subject.BuildInterfaces(first);
-            //_testOutputHelper.WriteLine(result);
+            var result = harness.Subject.BuildInterface(first);
+            _testOutputHelper.WriteLine(result);
+            result.Should().Be(expected);
+            
         }
 
         [Fact]

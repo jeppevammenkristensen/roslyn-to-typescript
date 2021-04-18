@@ -39,6 +39,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Files\BuildInterfaces.cs" />
     <None Remove="Files\SimpleSource.ts" />
+    <EmbeddedResource Include="Files\BuildInterfaces.ts" />
     <EmbeddedResource Include="Files\SimpleSource.ts" />
   </ItemGroup>
 

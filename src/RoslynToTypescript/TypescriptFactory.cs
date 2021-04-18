@@ -4,7 +4,7 @@ using System.Text;
 
 namespace RoslynToTypescript
 {
-    public record SourceFile(ImmutableArray<IStatement> Statements) : ISyntax
+    public record SourceFile(ImmutableArray<IStatement> Statements ) : ISyntax
     {
         public string Display(int indentation = 0)
         {
